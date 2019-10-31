@@ -21,7 +21,7 @@
 
 #define APP_I2C_CHANNEL				(I2C0)
 #define APP_UART_CHANNEL			(UART0)
-#define APP_SAMPLE_PERIOD			(100U)
+#define APP_SAMPLE_PERIOD			(10U)
 
 #define BMI160_INIT_TASK_NAME		"BMI160_init_task"
 #define BMI160_POLL_TASK_NAME		"BMI160_poll_task"
@@ -69,8 +69,10 @@
 										}											\
 									}
 
+#define NORM360(f)					( f*360/65535 )
 
 
+/* Data types */
 typedef struct
 {
 	uint32_t header;
@@ -78,7 +80,10 @@ typedef struct
 }comm_msg_t;
 
 
+/* Semaphores */
+SemaphoreHandle_t BMI160_command_mutex = NULL;
 
+/* Task handles */
 TaskHandle_t BMI160_init_task_handle = 0;
 TaskHandle_t BMI160_poll_task_handle = 0;
 
@@ -92,7 +97,8 @@ void BMI160_init_task(void* args)
 	uint8_t write_buffer[BMI160_INIT_TRANSFER_SIZE];
 
 
-
+/* Take mutex to prevent any other task to communicate with the sensor */
+	xSemaphoreTake(BMI160_command_mutex, portMAX_DELAY);
 
 
 /* Perform initial reading of PM_Status */
@@ -117,9 +123,6 @@ void BMI160_init_task(void* args)
 #endif
 
 
-
-
-
 /* Configure ACC to normal mode */
 	/* Define write transfer */
 	write_buffer[0]			  = BMI160_CMD_ACC_INIT;
@@ -134,10 +137,8 @@ void BMI160_init_task(void* args)
 	rtos_i2c_transfer(APP_I2C_CHANNEL, &write_xfer);
 
 
-
 /* Leave task until the sensor has accepted the command, so a new one can be sent */
 vTaskDelay( pdMS_TO_TICKS(BMI160_CMD_DELAY) );
-
 
 
 /* Configure GYR to normal mode */
@@ -154,12 +155,8 @@ vTaskDelay( pdMS_TO_TICKS(BMI160_CMD_DELAY) );
 	rtos_i2c_transfer(APP_I2C_CHANNEL, &write_xfer);
 
 
-
 /* Leave task until the sensor has accepted the command, so a new one can be sent */
 vTaskDelay( pdMS_TO_TICKS(BMI160_CMD_DELAY) );
-
-
-
 
 
 /* Perform final reading of PM_Status */
@@ -185,6 +182,8 @@ vTaskDelay( pdMS_TO_TICKS(BMI160_CMD_DELAY) );
 
 
 
+/* Release mutex to allow other tasks to communicate with the sensor */
+	xSemaphoreGive(BMI160_command_mutex);
 /* Suspend current task */
 	vTaskSuspend(BMI160_init_task_handle);
 }
@@ -198,16 +197,20 @@ void BMI160_poll_task(void* args)
 	/* Message structure */
 	comm_msg_t msg = { 0xAAAAAAAA, {0} };
 	/* Sensor values */
-	float acc_x, acc_y, acc_z, gyr_x, gyr_y, gyr_z;
+	uint16_t acc_x, acc_y, acc_z, gyr_x, gyr_y, gyr_z;
 
 
 
 	/* Repeat indefinitely */
 	for(;;)
 	{
+		/* Take mutex to prevent any other task to communicate with the sensor */
+		xSemaphoreTake(BMI160_command_mutex, portMAX_DELAY);
+
+
 		/* Define read transfer */
 		read_xfer.data           = ((uint8_t* volatile) (read_buffer));
-		read_xfer.dataSize       = BMI160_INIT_TRANSFER_SIZE;
+		read_xfer.dataSize       = BMI160_POLL_TRANSFER_SIZE;
 		read_xfer.direction      = kI2C_Read;
 		read_xfer.flags          = kI2C_TransferDefaultFlag;
 		read_xfer.slaveAddress   = BMI160_I2C_SLAVE_ADDR;
@@ -216,22 +219,29 @@ void BMI160_poll_task(void* args)
 		/* Read transfer */
 		rtos_i2c_transfer(APP_I2C_CHANNEL, &read_xfer);
 
+
+		/* Sleep task to achieve the desired sampling rate */
+		vTaskDelay( pdMS_TO_TICKS(APP_SAMPLE_PERIOD) );
+
+
 		/* Extract sensor readings from transfer */
-		gyr_x = (float) ( (read_buffer[ 1] << 8U) | (read_buffer[ 0]) );
-		gyr_y = (float) ( (read_buffer[ 3] << 8U) | (read_buffer[ 2]) );
-		gyr_z = (float) ( (read_buffer[ 5] << 8U) | (read_buffer[ 4]) );
-		acc_x = (float) ( (read_buffer[ 7] << 8U) | (read_buffer[ 6]) );
-		acc_y = (float) ( (read_buffer[ 9] << 8U) | (read_buffer[ 8]) );
-		acc_z = (float) ( (read_buffer[11] << 8U) | (read_buffer[10]) );
+		gyr_x = (uint16_t) ( (read_buffer[ 1] << 8U) | (read_buffer[ 0]) );
+		gyr_y = (uint16_t) ( (read_buffer[ 3] << 8U) | (read_buffer[ 2]) );
+		gyr_z = (uint16_t) ( (read_buffer[ 5] << 8U) | (read_buffer[ 4]) );
+		acc_x = (uint16_t) ( (read_buffer[ 7] << 8U) | (read_buffer[ 6]) );
+		acc_y = (uint16_t) ( (read_buffer[ 9] << 8U) | (read_buffer[ 8]) );
+		acc_z = (uint16_t) ( (read_buffer[11] << 8U) | (read_buffer[10]) );
 
 		/* Calculate angles based on readings through the Mahony algorithm */
-		msg.angles = MahonyAHRSupdateIMU(gyr_x, gyr_y, gyr_z, acc_x, acc_y, acc_z);
+		msg.angles = MahonyAHRSupdateIMU(NORM360(gyr_x), NORM360(gyr_y), NORM360(gyr_z), NORM360(acc_x), NORM360(acc_y), NORM360(acc_z));
 
 		/* Send the message through an UART transfer */
 		rtos_uart_send(APP_UART_CHANNEL, ((uint8_t*) &msg) , sizeof(comm_msg_t));
 
-		/* Sleep task to achieve the desired sampling rate */
-		vTaskDelay( pdMS_TO_TICKS(APP_SAMPLE_PERIOD) );
+
+
+		/* Release mutex to allow other tasks to communicate with the sensor */
+		xSemaphoreGive(BMI160_command_mutex);
 	}
 
 }
@@ -243,9 +253,9 @@ void BMI160_poll_task(void* args)
 int main(void) {
 	/* Initialize board clocks */
 	BOARD_InitBootClocks();
-/* Block execution before power-off */
-//	while(1);
 
+	/* Create mutex */
+	CREATE_MUTEX(BMI160_command_mutex);
 
 
 
@@ -284,7 +294,7 @@ int main(void) {
 
     /* Create tasks. */
 	CREATE_TASK(BMI160_init_task, BMI160_INIT_TASK_NAME, configMINIMAL_STACK_SIZE, NULL, BMI160_INIT_TASK_PRIORITY, &BMI160_init_task_handle);
-	CREATE_TASK(BMI160_poll_task, BMI160_POLL_TASK_NAME, configMINIMAL_STACK_SIZE, NULL, BMI160_POLL_TASK_PRIORITY, &BMI160_poll_task_handle);
+	CREATE_TASK(BMI160_poll_task, BMI160_POLL_TASK_NAME, 5*configMINIMAL_STACK_SIZE, NULL, BMI160_POLL_TASK_PRIORITY, &BMI160_poll_task_handle);
 
 
 
