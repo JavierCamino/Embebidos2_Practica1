@@ -8,22 +8,26 @@
 
 #include "my_RTOS_UART_driver.h"
 #include "my_RTOS_I2C_driver.h"
+
 #include "BMI160.h"
+#include "mahony.h"
 
 
 /////////////////////////////////////////
 /* Macros */
 /////////////////////////////////////////
-#define TEST_MODE
+
+//#define TEST_MODE
 
 #define APP_I2C_CHANNEL				(I2C0)
 #define APP_UART_CHANNEL			(UART0)
+#define APP_SAMPLE_PERIOD			(100U)
 
 #define BMI160_INIT_TASK_NAME		"BMI160_init_task"
+#define BMI160_POLL_TASK_NAME		"BMI160_poll_task"
 
 #define BMI160_INIT_TASK_PRIORITY	(configMAX_PRIORITIES - 1U)
-
-#define BMI160_INIT_TRANSFER_LENGTH	(1U)
+#define BMI160_POLL_TASK_PRIORITY	(configMAX_PRIORITIES - 2U)
 
 #define CREATE_TASK(a,b,c,d,e,f)	{												\
 										if( pdPASS != xTaskCreate(a,b,c,d,e,f) )	\
@@ -66,7 +70,17 @@
 									}
 
 
+
+typedef struct
+{
+	uint32_t header;
+	MahonyAHRSEuler_t angles;
+}comm_msg_t;
+
+
+
 TaskHandle_t BMI160_init_task_handle = 0;
+TaskHandle_t BMI160_poll_task_handle = 0;
 
 
 void BMI160_init_task(void* args)
@@ -74,10 +88,8 @@ void BMI160_init_task(void* args)
 /* Task local variables */
 	/* Transfer structures for reading and from/to the sensor */
 	i2c_master_transfer_t write_xfer = {0};
-	i2c_master_transfer_t read_xfer  = {0};
 	/* Buffers to store the transfers' payload */
-	uint8_t write_buffer[BMI160_INIT_TRANSFER_LENGTH];
-	uint8_t read_buffer[BMI160_INIT_TRANSFER_LENGTH];
+	uint8_t write_buffer[BMI160_INIT_TRANSFER_SIZE];
 
 
 
@@ -85,9 +97,11 @@ void BMI160_init_task(void* args)
 
 /* Perform initial reading of PM_Status */
 #ifdef TEST_MODE
-	/* Define write transfer */
+	i2c_master_transfer_t read_xfer  = {0};
+	uint8_t read_buffer[BMI160_INIT_TRANSFER_SIZE];
+	/* Define read transfer */
 	read_xfer.data           = ((uint8_t* volatile) (read_buffer));
-	read_xfer.dataSize       = BMI160_INIT_TRANSFER_LENGTH;
+	read_xfer.dataSize       = BMI160_INIT_TRANSFER_SIZE;
 	read_xfer.direction      = kI2C_Read;
 	read_xfer.flags          = kI2C_TransferDefaultFlag;
 	read_xfer.slaveAddress   = BMI160_I2C_SLAVE_ADDR;
@@ -110,7 +124,7 @@ void BMI160_init_task(void* args)
 	/* Define write transfer */
 	write_buffer[0]			  = BMI160_CMD_ACC_INIT;
 	write_xfer.data           = ((uint8_t* volatile) (write_buffer));
-	write_xfer.dataSize       = BMI160_INIT_TRANSFER_LENGTH;
+	write_xfer.dataSize       = BMI160_INIT_TRANSFER_SIZE;
 	write_xfer.direction      = kI2C_Write;
 	write_xfer.flags          = kI2C_TransferDefaultFlag;
 	write_xfer.slaveAddress   = BMI160_I2C_SLAVE_ADDR;
@@ -130,7 +144,7 @@ vTaskDelay( pdMS_TO_TICKS(BMI160_CMD_DELAY) );
 	/* Define write transfer */
 	write_buffer[0]			  = BMI160_CMD_GYR_INIT;
 	write_xfer.data           = ((uint8_t* volatile) (write_buffer));
-	write_xfer.dataSize       = BMI160_INIT_TRANSFER_LENGTH;
+	write_xfer.dataSize       = BMI160_INIT_TRANSFER_SIZE;
 	write_xfer.direction      = kI2C_Write;
 	write_xfer.flags          = kI2C_TransferDefaultFlag;
 	write_xfer.slaveAddress   = BMI160_I2C_SLAVE_ADDR;
@@ -150,9 +164,9 @@ vTaskDelay( pdMS_TO_TICKS(BMI160_CMD_DELAY) );
 
 /* Perform final reading of PM_Status */
 #ifdef TEST_MODE
-	/* Define write transfer */
+	/* Define read transfer */
 	read_xfer.data           = ((uint8_t* volatile) (read_buffer));
-	read_xfer.dataSize       = BMI160_INIT_TRANSFER_LENGTH;
+	read_xfer.dataSize       = BMI160_INIT_TRANSFER_SIZE;
 	read_xfer.direction      = kI2C_Read;
 	read_xfer.flags          = kI2C_TransferDefaultFlag;
 	read_xfer.slaveAddress   = BMI160_I2C_SLAVE_ADDR;
@@ -174,7 +188,53 @@ vTaskDelay( pdMS_TO_TICKS(BMI160_CMD_DELAY) );
 /* Suspend current task */
 	vTaskSuspend(BMI160_init_task_handle);
 }
+void BMI160_poll_task(void* args)
+{
+/* Task local variables */
+	/* Transfer structures for reading and from/to the sensor */
+	i2c_master_transfer_t read_xfer  = {0};
+	/* Buffers to store the transfers' payload */
+	uint8_t read_buffer[BMI160_POLL_TRANSFER_SIZE];
+	/* Message structure */
+	comm_msg_t msg = { 0xAAAAAAAA, {0} };
+	/* Sensor values */
+	float acc_x, acc_y, acc_z, gyr_x, gyr_y, gyr_z;
 
+
+
+	/* Repeat indefinitely */
+	for(;;)
+	{
+		/* Define read transfer */
+		read_xfer.data           = ((uint8_t* volatile) (read_buffer));
+		read_xfer.dataSize       = BMI160_INIT_TRANSFER_SIZE;
+		read_xfer.direction      = kI2C_Read;
+		read_xfer.flags          = kI2C_TransferDefaultFlag;
+		read_xfer.slaveAddress   = BMI160_I2C_SLAVE_ADDR;
+		read_xfer.subaddress     = BMI160_DATA_REG_ADDR;
+		read_xfer.subaddressSize = 1U;
+		/* Read transfer */
+		rtos_i2c_transfer(APP_I2C_CHANNEL, &read_xfer);
+
+		/* Extract sensor readings from transfer */
+		gyr_x = (float) ( (read_buffer[ 1] << 8U) | (read_buffer[ 0]) );
+		gyr_y = (float) ( (read_buffer[ 3] << 8U) | (read_buffer[ 2]) );
+		gyr_z = (float) ( (read_buffer[ 5] << 8U) | (read_buffer[ 4]) );
+		acc_x = (float) ( (read_buffer[ 7] << 8U) | (read_buffer[ 6]) );
+		acc_y = (float) ( (read_buffer[ 9] << 8U) | (read_buffer[ 8]) );
+		acc_z = (float) ( (read_buffer[11] << 8U) | (read_buffer[10]) );
+
+		/* Calculate angles based on readings through the Mahony algorithm */
+		msg.angles = MahonyAHRSupdateIMU(gyr_x, gyr_y, gyr_z, acc_x, acc_y, acc_z);
+
+		/* Send the message through an UART transfer */
+		rtos_uart_send(APP_UART_CHANNEL, ((uint8_t*) &msg) , sizeof(comm_msg_t));
+
+		/* Sleep task to achieve the desired sampling rate */
+		vTaskDelay( pdMS_TO_TICKS(APP_SAMPLE_PERIOD) );
+	}
+
+}
 
 
 
@@ -224,6 +284,7 @@ int main(void) {
 
     /* Create tasks. */
 	CREATE_TASK(BMI160_init_task, BMI160_INIT_TASK_NAME, configMINIMAL_STACK_SIZE, NULL, BMI160_INIT_TASK_PRIORITY, &BMI160_init_task_handle);
+	CREATE_TASK(BMI160_poll_task, BMI160_POLL_TASK_NAME, configMINIMAL_STACK_SIZE, NULL, BMI160_POLL_TASK_PRIORITY, &BMI160_poll_task_handle);
 
 
 
@@ -237,6 +298,7 @@ int main(void) {
 
     /* Delete Tasks*/
 	vTaskDelete(BMI160_init_task_handle);
+	vTaskDelete(BMI160_poll_task_handle);
 
 
 	for(;;);

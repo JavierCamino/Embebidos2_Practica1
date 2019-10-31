@@ -11,8 +11,12 @@
 /* Registers */
 #define BMI160_CMD_REG_ADDR			(0x7E)
 #define BMI160_PMU_STATUS_REG_ADDR	(0x03)
+#define BMI160_DATA_REG_ADDR		(0x0C)
 
 /* Configuration values */
+#define BMI160_INIT_TRANSFER_SIZE	(1U)
+#define BMI160_POLL_TRANSFER_SIZE	(12U)
+
 #define BMI160_CMD_ACC_INIT			(0x11)
 #define BMI160_CMD_GYR_INIT			(0x15)
 #define BMI160_CMD_DELAY			(100U)
