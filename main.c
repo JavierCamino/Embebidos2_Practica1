@@ -21,7 +21,7 @@
 
 #define APP_I2C_CHANNEL				(I2C0)
 #define APP_UART_CHANNEL			(UART0)
-#define APP_SAMPLE_PERIOD			(10U)
+#define APP_SAMPLE_PERIOD			(100U)
 
 #define BMI160_INIT_TASK_NAME		"BMI160_init_task"
 #define BMI160_POLL_TASK_NAME		"BMI160_poll_task"
@@ -69,7 +69,7 @@
 										}											\
 									}
 
-#define NORM360(f)					( f*360/65535 )
+#define NORM360(f)					((float) (f))
 
 
 /* Data types */
@@ -201,6 +201,7 @@ void BMI160_poll_task(void* args)
 
 
 
+
 	/* Repeat indefinitely */
 	for(;;)
 	{
@@ -266,7 +267,7 @@ int main(void) {
 	/* Define channel configuration */
 	i2c_config.baudrate    = 100000U;
 	i2c_config.i2c_channel = APP_I2C_CHANNEL;
-	i2c_config.pin_mux     = 2U;
+	i2c_config.pin_mux     = kPORT_MuxAlt2;
 	i2c_config.port        = PORTB;
 	i2c_config.scl_pin     = 2U;
 	i2c_config.sda_pin     = 3U;
@@ -294,7 +295,7 @@ int main(void) {
 
     /* Create tasks. */
 	CREATE_TASK(BMI160_init_task, BMI160_INIT_TASK_NAME, configMINIMAL_STACK_SIZE, NULL, BMI160_INIT_TASK_PRIORITY, &BMI160_init_task_handle);
-	CREATE_TASK(BMI160_poll_task, BMI160_POLL_TASK_NAME, 5*configMINIMAL_STACK_SIZE, NULL, BMI160_POLL_TASK_PRIORITY, &BMI160_poll_task_handle);
+	CREATE_TASK(BMI160_poll_task, BMI160_POLL_TASK_NAME, 3*configMINIMAL_STACK_SIZE, NULL, BMI160_POLL_TASK_PRIORITY, &BMI160_poll_task_handle);
 
 
 
